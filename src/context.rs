@@ -1,7 +1,8 @@
 use std::{ffi::{c_char, c_void}, ops, ptr, ptr::NonNull, sync::{
-        Arc,
-        atomic::{self, AtomicBool}, Mutex, MutexGuard,
+    Arc,
+    atomic::{self, AtomicBool}, Mutex, MutexGuard,
 }};
+use std::ffi::CString;
 
 use anyhow::{anyhow, bail, ensure, Result};
 use ggml_sys_bleedingedge as gg;
@@ -178,6 +179,7 @@ impl ScratchBuffer {
 /// [GContext].
 pub struct GContextBuilder {
     mem_size: usize,
+    mem_buffer: *mut c_void,
     no_alloc: bool,
 }
 
@@ -384,11 +386,12 @@ impl GContext {
     ) -> Result<GTensor<DIMS>>
         where
             Dim<DIMS>: DimValid,
-            DimPair<DIMS, 4>: DimLt,
+            DimPair<DIMS, 5>: DimLt,
     {
         self.with_icontext(|ctx, mut ictx| {
             unsafe {
-                let p = gg::ggml_get_tensor(ictx.gptr(), name.as_ptr() as *const c_char);
+                let name_cstring = CString::new(name).unwrap();
+                let p = gg::ggml_get_tensor(ictx.gptr(), name_cstring.as_ptr());
 
                 if p.is_null() {
                     Err(GContextError::TensorGetFailed(name.to_owned()))?;

@@ -250,11 +250,11 @@ impl<const DIMS: usize> GTensor<DIMS>
             Dim<RDIMS>: DimValid,
             Dim<ODIMS>: DimValid,
             DimPair<DIMS, 2>: DimGtE,
-            DimPair<DIMS, 4>: DimLt,
+            DimPair<DIMS, 5>: DimLt,
             DimPair<RDIMS, 2>: DimGtE,
             DimPair<ODIMS, 2>: DimEq,
     {
-        let rmd = rhs.as_ref().md.clone();
+        // let rmd = rhs.as_ref().md.clone();
         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
             // FIXME: Double check this calculation.
             // let shp = match ODIMS {

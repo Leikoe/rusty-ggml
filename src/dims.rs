@@ -24,11 +24,17 @@ impl DimLt for DimPair<1, 3> {}
 
 impl DimLt for DimPair<1, 4> {}
 
+impl DimLt for DimPair<1, 5> {}
+
 impl DimLt for DimPair<2, 3> {}
 
 impl DimLt for DimPair<2, 4> {}
 
+impl DimLt for DimPair<2, 5> {}
+
 impl DimLt for DimPair<3, 4> {}
+
+impl DimLt for DimPair<3, 5> {}
 
 impl DimLt for DimPair<4, 5> {}
 

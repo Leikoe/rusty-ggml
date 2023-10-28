@@ -306,12 +306,13 @@ impl<const DIMS: usize> GTensor<DIMS>
         where
             Dim<ODIMS>: DimValid,
             DimPair<ODIMS, 2>: DimGtE,
-            DimPair<ODIMS, 4>: DimLt,
+            DimPair<ODIMS, 5>: DimLt,
     {
         self.new_unary(|ctx, ictx, tptr| {
             let shp = match ODIMS {
                 2 => vec![ne[1], ne[0]],
                 3 => vec![ne[1], ne[0], ne[2]],
+                4 => vec![ne[1], ne[0], ne[2], ne[3]],
                 _ => Err(GTensorError::InvalidOperation)?,
             };
             let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, shp)
@@ -329,6 +330,16 @@ impl<const DIMS: usize> GTensor<DIMS>
                             ne[1] as i64,
                             ne[0] as i64,
                             ne[2] as i64,
+                        )
+                    },
+                    4 => unsafe {
+                        gg::ggml_reshape_4d(
+                            ictx.gptr(),
+                            tptr,
+                            ne[1] as i64,
+                            ne[0] as i64,
+                            ne[2] as i64,
+                            ne[3] as i64,
                         )
                     },
                     _ => Err(GTensorError::InvalidOperation)?,

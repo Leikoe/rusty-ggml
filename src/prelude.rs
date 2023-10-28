@@ -11,3 +11,6 @@ pub type GTensor2 = GTensor<2>;
 
 /// Alias for three dimensional tensors.
 pub type GTensor3 = GTensor<3>;
+
+/// Alias for four dimensional tensors.
+pub type GTensor4 = GTensor<4>;

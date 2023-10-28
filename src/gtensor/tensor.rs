@@ -2,7 +2,7 @@ use std::{
     ptr::NonNull,
     sync::{Arc, atomic::Ordering::SeqCst},
 };
-use std::ffi::c_char;
+use std::ffi::CStr;
 
 use anyhow::{ensure, Result};
 use ggml_sys_bleedingedge as gg;
@@ -333,10 +333,10 @@ impl<const DIMS: usize> GTensor<DIMS>
             rhs.ctx.dead.store(true, SeqCst);
             return self.make_dead_clone();
         }
-        assert_eq!(
-            self.ctx.ptrval, rhs.ctx.ptrval,
-            "Cannot perform operation between tensors from different contexts!"
-        );
+        // assert_eq!(
+        //     self.ctx.ptrval, rhs.ctx.ptrval,
+        //     "Cannot perform operation between tensors from different contexts!"
+        // );
 
         self.ctx.delay_failure_with_icontext(
             || self.make_dead_clone(),
@@ -434,9 +434,9 @@ impl<const DIMS: usize> GTensor<DIMS>
     }
 
     pub fn set_name(&mut self, name: &str) {
-        self.with_tensor_infallible(|ctx, _ictx, tptr| {
+        self.with_tensor_infallible(|_ctx, _ictx, tptr| {
             unsafe {
-                gg::ggml_set_name(tptr, name.as_ptr() as *const c_char);
+                gg::ggml_set_name(tptr, CStr::from_bytes_with_nul_unchecked(name.as_bytes()).as_ptr());
             }
             ()
         }).expect("ggml_set_name shouldn't be able to fail")
