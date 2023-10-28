@@ -1,13 +1,13 @@
 use std::{
     ptr::NonNull,
-    sync::{atomic::Ordering::SeqCst, Arc},
+    sync::{Arc, atomic::Ordering::SeqCst},
 };
+use std::ffi::c_char;
 
 use anyhow::{ensure, Result};
+use ggml_sys_bleedingedge as gg;
 use num_traits::FromPrimitive;
 use thiserror::Error;
-
-use ggml_sys_bleedingedge as gg;
 
 use crate::{
     context::{GContext, GContextError, IContext},
@@ -58,8 +58,8 @@ pub struct GTensorMetadata<const DIMS: usize> {
 }
 
 impl<const DIMS: usize> GTensorMetadata<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     /// # Safety
     /// Must be called with context mutex held.
@@ -146,18 +146,18 @@ where
     }
 
     pub fn can_repeat_with<const RDIMS: usize>(&self, other: &GTensorMetadata<RDIMS>) -> bool
-    where
-        Dim<RDIMS>: DimValid,
+        where
+            Dim<RDIMS>: DimValid,
     {
         DIMS < 3
             && RDIMS < 3
             && !self.is_transposed()
             && !other.is_transposed()
             && self
-                .ggml_ne
-                .iter()
-                .zip(other.ggml_ne.iter())
-                .all(|(lels, rels)| lels > &0 && rels % lels == 0)
+            .ggml_ne
+            .iter()
+            .zip(other.ggml_ne.iter())
+            .all(|(lels, rels)| lels > &0 && rels % lels == 0)
     }
 
     pub fn is_permuted(&self) -> bool {
@@ -213,8 +213,8 @@ impl<const DIMS: usize> PartialEq for GTensor<DIMS> {
 }
 
 impl<const DIMS: usize> AsRef<GTensor<DIMS>> for GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     fn as_ref(&self) -> &GTensor<DIMS> {
         self
@@ -225,18 +225,22 @@ where
 // Internal methods
 //
 impl<const DIMS: usize> GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
+    /// creates a new GTensor with the provided tensor ptr and updates the GContext's used memory with the optional GMemoryRequest
     /// # Safety
     /// Must be called with context mutex held.
     pub(crate) unsafe fn new_from_ptr(
         ctx: &GContext,
         ictx: &mut IContext,
-        (mr, p): (GMemoryRequest, *mut gg::ggml_tensor),
+        mr: Option<GMemoryRequest>,
+        p: *mut gg::ggml_tensor,
     ) -> Result<Self> {
         let tptr = NonNull::new(p).ok_or(GTensorError::NullPointer)?;
-        ictx.update_used_memory(&mr)?;
+        if let Some(mr) = mr {
+            ictx.update_used_memory(&mr)?;
+        }
         Ok(Self {
             ctx: ctx.clone(),
             md: GTensorMetadata::from_ptr(tptr),
@@ -245,8 +249,8 @@ where
     }
 
     pub(crate) fn make_dead_clone<const ODIMS: usize>(&self) -> GTensor<ODIMS>
-    where
-        Dim<ODIMS>: DimValid,
+        where
+            Dim<ODIMS>: DimValid,
     {
         GTensor {
             ctx: self.ctx.clone(),
@@ -256,52 +260,52 @@ where
     }
 
     pub(crate) fn with_tensor<OUT, F>(&self, fun: F) -> Result<OUT>
-    where
-        F: FnOnce(&GContext, &mut IContext, *mut gg::ggml_tensor) -> Result<OUT>,
+        where
+            F: FnOnce(&GContext, &mut IContext, *mut gg::ggml_tensor) -> Result<OUT>,
     {
         self.ctx
             .with_icontext(|ctx, mut ictx| fun(ctx, &mut ictx, self.tptr.as_ptr()))
     }
 
     pub(crate) fn with_tensor_infallible<OUT, F>(&self, fun: F) -> Result<OUT>
-    where
-        F: FnOnce(&GContext, &mut IContext, *mut gg::ggml_tensor) -> OUT,
+        where
+            F: FnOnce(&GContext, &mut IContext, *mut gg::ggml_tensor) -> OUT,
     {
         self.ctx
             .with_icontext_infallible(|mut ictx| fun(&self.ctx, &mut ictx, self.tptr.as_ptr()))
     }
 
     pub(crate) fn with_tensor_delay_failure<OUT, DF, F>(&self, dfun: DF, fun: F) -> OUT
-    where
-        DF: Fn() -> OUT,
-        F: FnOnce(&GContext, &mut IContext, *mut gg::ggml_tensor) -> Result<OUT>,
+        where
+            DF: Fn() -> OUT,
+            F: FnOnce(&GContext, &mut IContext, *mut gg::ggml_tensor) -> Result<OUT>,
     {
         self.ctx
             .delay_failure_with_icontext(dfun, |ictx| fun(&self.ctx, ictx, self.tptr.as_ptr()))
     }
 
     pub(crate) fn with_tensor_unit_delay_failure<F>(&self, fun: F)
-    where
-        F: FnOnce(&GContext, &IContext, *mut gg::ggml_tensor) -> Result<()>,
+        where
+            F: FnOnce(&GContext, &IContext, *mut gg::ggml_tensor) -> Result<()>,
     {
         self.ctx
             .delay_failure_with_icontext(|| (), |ictx| fun(&self.ctx, ictx, self.tptr.as_ptr()))
     }
 
     pub(crate) fn new_unary<const ODIMS: usize, F>(&self, fun: F) -> GTensor<ODIMS>
-    where
-        Dim<ODIMS>: DimValid,
-        F: FnOnce(
-            &GContext,
-            &mut IContext,
-            *mut gg::ggml_tensor,
-        ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
+        where
+            Dim<ODIMS>: DimValid,
+            F: FnOnce(
+                &GContext,
+                &mut IContext,
+                *mut gg::ggml_tensor,
+            ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
     {
         self.with_tensor_delay_failure(
             || self.make_dead_clone(),
             |ctx, ictx, tptr| {
-                let fresult = fun(ctx, ictx, tptr)?;
-                unsafe { GTensor::<ODIMS>::new_from_ptr(ctx, ictx, fresult) }
+                let (mr, p) = fun(ctx, ictx, tptr)?;
+                unsafe { GTensor::<ODIMS>::new_from_ptr(ctx, ictx, Some(mr), p) }
             },
         )
     }
@@ -312,16 +316,16 @@ where
         rhs: T,
         fun: F,
     ) -> GTensor<ODIMS>
-    where
-        Dim<RDIMS>: DimValid,
-        Dim<ODIMS>: DimValid,
-        F: FnOnce(
-            &GContext,
-            &mut IContext,
-            *mut gg::ggml_tensor,
-            *mut gg::ggml_tensor,
-        ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
-        T: AsRef<GTensor<RDIMS>>,
+        where
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            F: FnOnce(
+                &GContext,
+                &mut IContext,
+                *mut gg::ggml_tensor,
+                *mut gg::ggml_tensor,
+            ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
+            T: AsRef<GTensor<RDIMS>>,
     {
         let rhs = rhs.as_ref();
         if self.ctx.dead.load(SeqCst) || rhs.ctx.dead.load(SeqCst) {
@@ -339,8 +343,8 @@ where
             |mut ictx| {
                 let ictx = &mut ictx;
                 let (ltptr, rtptr) = (self.tptr.as_ptr(), rhs.tptr.as_ptr());
-                let fresult = fun(&self.ctx, ictx, ltptr, rtptr)?;
-                unsafe { GTensor::<ODIMS>::new_from_ptr(&self.ctx, ictx, fresult) }
+                let (mr, p) = fun(&self.ctx, ictx, ltptr, rtptr)?;
+                unsafe { GTensor::<ODIMS>::new_from_ptr(&self.ctx, ictx, Some(mr), p) }
             },
         )
     }
@@ -350,8 +354,8 @@ where
 // Utility methods
 //
 impl<const DIMS: usize> GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     /// Alternate method to access a tensor's
     /// dimensions without needing an actual [GTensor] value
@@ -427,6 +431,15 @@ where
     /// bytes, and _not_ the number of elements.
     pub fn get_nb(&self) -> [u32; 4] {
         self.md.ggml_nb
+    }
+
+    pub fn set_name(&mut self, name: &str) {
+        self.with_tensor_infallible(|ctx, _ictx, tptr| {
+            unsafe {
+                gg::ggml_set_name(tptr, name.as_ptr() as *const c_char);
+            }
+            ()
+        }).expect("ggml_set_name shouldn't be able to fail")
     }
 
     /// Immediately fills the tensor's data with zeros.
@@ -570,8 +583,8 @@ where
 // Unsafe public methods
 //
 impl<const DIMS: usize> GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     /// Low level function that allows mutably accessing a tensor's
     /// data as a slice of `u8`.
@@ -581,8 +594,8 @@ where
     /// not to reinterpret as the wrong type or set the data to something
     /// that would contain an invalid value for the type.
     pub unsafe fn with_data_mut<F, O>(&mut self, fun: F) -> Result<O>
-    where
-        F: FnOnce(&mut [u8]) -> O,
+        where
+            F: FnOnce(&mut [u8]) -> O,
     {
         ensure!(!self.ctx.no_alloc, GContextError::NoAlloc);
         self.with_tensor_infallible(|_ctx, _ictx, tptr| {
@@ -600,8 +613,8 @@ where
     /// Since this is working with the raw bytes, you need to be careful
     /// not to reinterpret as the wrong type.
     pub unsafe fn with_data<F, O>(&self, fun: F) -> Result<O>
-    where
-        F: FnOnce(&[u8]) -> O,
+        where
+            F: FnOnce(&[u8]) -> O,
     {
         ensure!(!self.ctx.no_alloc, GContextError::NoAlloc);
         self.with_tensor_infallible(|_ctx, _ictx, tptr| {
@@ -637,8 +650,8 @@ where
 // Misc methods
 //
 impl<const DIMS: usize> GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     /// Copies data from the specified tensor into this tensor when the graph runs.
     ///

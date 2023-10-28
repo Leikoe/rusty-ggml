@@ -1,7 +1,8 @@
 use ggml_sys_bleedingedge as gg;
 
+use crate::{dims::*, util::{GOpPool, GType}, validation::GMemoryRequest};
+
 use super::tensor::*;
-use crate::{dims::*, util::GType, validation::GMemoryRequest};
 
 macro_rules! mk_simple_uops {
   ( $($(#[$attr:meta])* [$opname:ident, $gfname:ident]),* $(,)? ) => { $(
@@ -18,8 +19,8 @@ macro_rules! mk_simple_uops {
 }
 
 impl<const DIMS: usize> GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     mk_simple_uops! {
 
@@ -259,9 +260,9 @@ where
     /// assert_eq!(result, [2.5]);
     /// ```
     pub fn mean<const ODIMS: usize>(&self) -> GTensor<ODIMS>
-    where
-        Dim<ODIMS>: DimValid,
-        DimPair<ODIMS, 2>: DimLt,
+        where
+            Dim<ODIMS>: DimValid,
+            DimPair<ODIMS, 2>: DimLt,
     {
         self.new_unary(|ctx, ictx, tptr| {
             let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, [1])
@@ -286,9 +287,9 @@ where
     /// assert_eq!(result, [10]);
     /// ```
     pub fn sum<const ODIMS: usize>(&self) -> GTensor<ODIMS>
-    where
-        Dim<ODIMS>: DimValid,
-        DimPair<ODIMS, 2>: DimLt,
+        where
+            Dim<ODIMS>: DimValid,
+            DimPair<ODIMS, 2>: DimLt,
     {
         self.new_unary(|ctx, ictx, tptr| {
             let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, [1])
@@ -302,10 +303,10 @@ where
     /// # !!!! FIXME !!!!
     // FIXME: Make reshape_like (another tensor) also
     pub fn reshape<const ODIMS: usize>(&self, ne: [usize; ODIMS]) -> GTensor<ODIMS>
-    where
-        Dim<ODIMS>: DimValid,
-        DimPair<ODIMS, 2>: DimGtE,
-        DimPair<ODIMS, 4>: DimLt,
+        where
+            Dim<ODIMS>: DimValid,
+            DimPair<ODIMS, 2>: DimGtE,
+            DimPair<ODIMS, 4>: DimLt,
     {
         self.new_unary(|ctx, ictx, tptr| {
             let shp = match ODIMS {
@@ -344,9 +345,9 @@ where
         ne: [i64; ODIMS],
         offset: [usize; ODIMS],
     ) -> GTensor<ODIMS>
-    where
-        Dim<ODIMS>: DimValid,
-        DimPair<ODIMS, 3>: DimLt,
+        where
+            Dim<ODIMS>: DimValid,
+            DimPair<ODIMS, 3>: DimLt,
     {
         self.new_unary(|ctx, ictx, tptr| {
             let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, [])
@@ -454,12 +455,45 @@ where
             }
         })
     }
+
+    pub fn pool_2d(
+        self,
+        op: GOpPool,
+        k0: i32,
+        k1: i32,
+        s0: i32,
+        s1: i32,
+        p0: i32,
+        p1: i32,
+    ) -> Self {
+        self.new_unary(|ctx, ictx, tptr| {
+            let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, [])
+                .fit_or_die()?;
+            unsafe {
+                Ok((
+                    mr,
+                    gg::ggml_pool_2d(
+                        ictx.gptr(),
+                        tptr,
+                        op as gg::ggml_op_pool,
+                        k0,
+                        k1,
+                        s0,
+                        s1,
+                        p0,
+                        p1,
+                    ),
+                ))
+            }
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{context::*, util::GType};
     use anyhow::Result;
+
+    use crate::{context::*, util::GType};
 
     macro_rules! test_uop_simple {
         (

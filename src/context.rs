@@ -1,17 +1,11 @@
-use std::{
-    ffi::c_void,
-    ops,
-    ptr::NonNull,
-    sync::{
-        atomic::{self, AtomicBool},
-        Arc, Mutex, MutexGuard,
-    },
-};
+use std::{ffi::{c_char, c_void}, ops, ptr, ptr::NonNull, sync::{
+        Arc,
+        atomic::{self, AtomicBool}, Mutex, MutexGuard,
+}};
 
 use anyhow::{anyhow, bail, ensure, Result};
-use thiserror::Error;
-
 use ggml_sys_bleedingedge as gg;
+use thiserror::Error;
 
 use crate::{dims::*, gtensor::GTensor, util::GType, validation::*};
 
@@ -36,6 +30,10 @@ pub enum GContextError {
     // FIXME: Allow including more detail about what went wrong.
     #[error("Could not create tensor")]
     TensorCreationFailed,
+
+    // FIXME: is this the proper way to include tensor name ?
+    #[error("Could not get '{0}' tensor")]
+    TensorGetFailed(String),
 
     #[error("Attempt to access data in or compute with a no_alloc context")]
     NoAlloc,
@@ -223,15 +221,21 @@ impl GContextBuilder {
                 no_alloc: self.no_alloc,
             })
         };
+        GContext::from_pointer(ptr, self.mem_size, self.no_alloc)
+    }
+}
+
+impl GContext {
+    pub(crate) fn from_pointer(ptr: *mut gg::ggml_context, mem_size: usize, no_alloc: bool) -> Result<Self> {
         ensure!(!ptr.is_null(), "GGML init failed");
         Ok(GContext {
-            context_size: self.mem_size,
-            no_alloc: self.no_alloc,
+            context_size: mem_size,
+            no_alloc,
             ptrval: ptr as usize,
             ictx: Arc::new(Mutex::new(IContext {
                 gctx: NonNull::new(ptr).unwrap(),
                 context_used: 0,
-                context_memory: self.mem_size,
+                context_memory: mem_size,
                 scratch_buffers: vec![],
                 current_scratch_buffer: None,
                 failed: None,
@@ -239,12 +243,10 @@ impl GContextBuilder {
             dead: Arc::new(AtomicBool::new(false)),
         })
     }
-}
 
-impl GContext {
     pub(crate) fn with_icontext<OUT, F>(&self, fun: F) -> Result<OUT>
-    where
-        F: FnOnce(&GContext, MutexGuard<IContext>) -> Result<OUT>,
+        where
+            F: FnOnce(&GContext, MutexGuard<IContext>) -> Result<OUT>,
     {
         let failed = self.dead.load(atomic::Ordering::SeqCst);
         let ictx = self
@@ -263,8 +265,8 @@ impl GContext {
 
     // FIXME: This logic seems kind of weird. Same problem in `Tensor::with_tensor_infallible`.
     pub(crate) fn with_icontext_infallible<OUT, F>(&self, fun: F) -> Result<OUT>
-    where
-        F: FnOnce(MutexGuard<IContext>) -> OUT,
+        where
+            F: FnOnce(MutexGuard<IContext>) -> OUT,
     {
         let failed = self.dead.load(atomic::Ordering::SeqCst);
         let mut ctx = self.ictx.lock().map_err(|_e| {
@@ -288,9 +290,9 @@ impl GContext {
     }
 
     pub(crate) fn delay_failure_with_icontext<OUT, DF, F>(&self, dfun: DF, fun: F) -> OUT
-    where
-        DF: Fn() -> OUT,
-        F: FnOnce(&mut IContext) -> Result<OUT>,
+        where
+            DF: Fn() -> OUT,
+            F: FnOnce(&mut IContext) -> Result<OUT>,
     {
         self.with_icontext_infallible(|mut ictx| {
             fun(&mut ictx).unwrap_or_else(|e| {
@@ -301,11 +303,11 @@ impl GContext {
                 dfun()
             })
         })
-        .unwrap_or_else(|_e| {
-            // We couldn't get the context mutex, but we can still mark the context as dead.
-            self.dead.store(true, atomic::Ordering::SeqCst);
-            dfun()
-        })
+            .unwrap_or_else(|_e| {
+                // We couldn't get the context mutex, but we can still mark the context as dead.
+                self.dead.store(true, atomic::Ordering::SeqCst);
+                dfun()
+            })
     }
 
     pub fn estimate_tensor_size<const DIMS: usize>(
@@ -329,9 +331,9 @@ impl GContext {
         typ: GType,
         shape: [usize; DIMS],
     ) -> Result<GTensor<DIMS>>
-    where
-        Dim<DIMS>: DimValid,
-        DimPair<DIMS, 4>: DimLt,
+        where
+            Dim<DIMS>: DimValid,
+            DimPair<DIMS, 5>: DimLt,
     {
         self.with_icontext(|ctx, mut ictx| {
             let mr = GMemoryRequest::estimate_tensor_request_ictx(self, &ictx, typ, shape);
@@ -353,13 +355,45 @@ impl GContext {
                         shape[0] as i64,
                         shape[2] as i64,
                     ),
+                    4 => gg::ggml_new_tensor_4d(
+                        ictx.gptr(),
+                        typ as u32,
+                        shape[1] as i64,
+                        shape[0] as i64,
+                        shape[2] as i64,
+                        shape[3] as i64,
+                    ),
                     _ => unreachable!(),
                 };
 
                 if p.is_null() {
                     Err(GContextError::TensorCreationFailed)?;
                 }
-                GTensor::new_from_ptr(ctx, &mut ictx, (mr, p))
+                GTensor::new_from_ptr(ctx, &mut ictx, Some(mr), p)
+            }
+        })
+    }
+
+    /// Gets the tensor with specified name from the context.
+    ///
+    /// This uses const generics to determine the new tensor's dimensions. The tensor dimensions
+    /// will be equal to the number of items in the `shape` array.
+    pub fn get_tensor<const DIMS: usize>(
+        &self,
+        name: &str,
+    ) -> Result<GTensor<DIMS>>
+        where
+            Dim<DIMS>: DimValid,
+            DimPair<DIMS, 4>: DimLt,
+    {
+        self.with_icontext(|ctx, mut ictx| {
+            unsafe {
+                let p = gg::ggml_get_tensor(ictx.gptr(), name.as_ptr() as *const c_char);
+
+                if p.is_null() {
+                    Err(GContextError::TensorGetFailed(name.to_owned()))?;
+                }
+                GTensor::new_from_ptr(ctx, &mut ictx, None, p)
             }
         })
     }
@@ -437,8 +471,8 @@ impl GGraph {
         &mut self,
         tensor: T,
     ) -> Result<()>
-    where
-        Dim<DIMS>: DimValid,
+        where
+            Dim<DIMS>: DimValid,
     {
         // FIXME: Should we bail out here if no_alloc?
         tensor
@@ -446,5 +480,40 @@ impl GGraph {
             .with_tensor_infallible(|_ctx, _ictx, tptr| unsafe {
                 gg::ggml_build_forward_expand(&mut self.graph, tptr)
             })
+    }
+
+    pub fn dump_dot(
+        &self,
+        gf: Option<&GGraph>,
+        filename: &str,
+    )
+    {
+        unsafe {
+            match gf {
+                None => gg::ggml_graph_dump_dot(&self.graph, ptr::null(), filename.as_ptr() as *const c_char),
+                Some(gf) => {
+                    gg::ggml_graph_dump_dot(&self.graph, &gf.graph, filename.as_ptr() as *const c_char)
+                }
+            }
+        }
+    }
+
+    pub fn print(
+        &self,
+    )
+    {
+        unsafe {
+            gg::ggml_graph_print(&self.graph);
+        }
+    }
+
+    pub fn export(
+        &self,
+        filename: &str,
+    )
+    {
+        unsafe {
+            gg::ggml_graph_export(&self.graph, filename.as_ptr() as *const c_char);
+        }
     }
 }

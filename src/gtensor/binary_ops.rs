@@ -2,8 +2,9 @@ use std::ops;
 
 use ggml_sys_bleedingedge as gg;
 
-use super::tensor::*;
 use crate::{dims::*, util::GType, validation::*};
+
+use super::tensor::*;
 
 macro_rules! mk_simple_bops {
   ( $( $(#[$attr:meta])* [$opname:ident, $gfname:ident]),* $(,)? ) => { $(
@@ -46,8 +47,8 @@ macro_rules! mk_gopinstances {
 }
 
 impl<const DIMS: usize> GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     mk_simple_bops! {
         /// Add tensor `B` to tensor `A`.
@@ -142,9 +143,9 @@ where
     /// assert_eq!(result, [6, 6, 6]);
     /// ```
     pub fn scale<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(&self, rhs: T) -> Self
-    where
-        Dim<RDIMS>: DimValid,
-        DimPair<1, RDIMS>: DimEq,
+        where
+            Dim<RDIMS>: DimValid,
+            DimPair<1, RDIMS>: DimEq,
     {
         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
             let mr =
@@ -187,10 +188,10 @@ where
     /// assert_eq!(result, expected);
     /// ```
     pub fn repeat<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(&self, rhs: T) -> GTensor<RDIMS>
-    where
-        Dim<RDIMS>: DimValid,
-        DimPair<DIMS, 3>: DimLt,
-        DimPair<RDIMS, 3>: DimLt,
+        where
+            Dim<RDIMS>: DimValid,
+            DimPair<DIMS, 3>: DimLt,
+            DimPair<RDIMS, 3>: DimLt,
     {
         let rmd = rhs.as_ref().md.clone();
         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
@@ -211,13 +212,13 @@ where
         p0: usize,
         d0: usize,
     ) -> Self
-    where
-        Dim<RDIMS>: DimValid,
-        Dim<ODIMS>: DimValid,
-        DimPair<DIMS, 2>: DimGtE,
-        DimPair<DIMS, 4>: DimLt,
-        DimPair<RDIMS, 2>: DimGtE,
-        DimPair<ODIMS, 2>: DimEq,
+        where
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<DIMS, 2>: DimGtE,
+            DimPair<DIMS, 4>: DimLt,
+            DimPair<RDIMS, 2>: DimGtE,
+            DimPair<ODIMS, 2>: DimEq,
     {
         let rmd = rhs.as_ref().md.clone();
         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
@@ -231,6 +232,41 @@ where
                 .fit_or_die()?;
             Ok((mr, unsafe {
                 gg::ggml_conv_1d(ictx.gptr(), ltptr, rtptr, s0 as i32, p0 as i32, d0 as i32)
+            }))
+        })
+    }
+
+    pub fn conv_2d<const RDIMS: usize, const ODIMS: usize, T: AsRef<GTensor<RDIMS>>>(
+        &self,
+        rhs: T,
+        s0: usize,
+        s1: usize,
+        p0: usize,
+        p1: usize,
+        d0: usize,
+        d1: usize,
+    ) -> Self
+        where
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<DIMS, 2>: DimGtE,
+            DimPair<DIMS, 4>: DimLt,
+            DimPair<RDIMS, 2>: DimGtE,
+            DimPair<ODIMS, 2>: DimEq,
+    {
+        let rmd = rhs.as_ref().md.clone();
+        self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
+            // FIXME: Double check this calculation.
+            // let shp = match ODIMS {
+            //         2 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize],
+            //         3 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize / 2],
+            //         _ => Err(GTensorError::InvalidOperation)?,
+            // };
+            let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, [])
+                .fit_or_die()?;
+            Ok((mr, unsafe {
+                gg::ggml_conv_2d(ictx.gptr(), ltptr, rtptr,
+                                 s0 as i32, s1 as i32, p0 as i32, p1 as i32, d0 as i32, d1 as i32)
             }))
         })
     }
@@ -287,8 +323,8 @@ where
         &self,
         rhs: T,
     ) -> GTensor<RDIMS>
-    where
-        Dim<RDIMS>: DimValid,
+        where
+            Dim<RDIMS>: DimValid,
     {
         let rmd = rhs.as_ref().md.clone();
         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
@@ -306,12 +342,12 @@ where
         &self,
         rhs: T,
     ) -> GTensor<ODIMS>
-    where
-        Dim<RDIMS>: DimValid,
-        Dim<ODIMS>: DimValid,
-        DimPair<DIMS, 2>: DimGtE,
-        DimPair<RDIMS, 2>: DimLt,
-        DimPair<ODIMS, 2>: DimEq,
+        where
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<DIMS, 2>: DimGtE,
+            DimPair<RDIMS, 2>: DimLt,
+            DimPair<ODIMS, 2>: DimEq,
     {
         let rmd = rhs.as_ref().md.clone();
         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
@@ -321,7 +357,7 @@ where
                 GType::F32,
                 [self.md.shape[1], rmd.shape[0]],
             )
-            .fit_or_die()?;
+                .fit_or_die()?;
             Ok((mr, unsafe { gg::ggml_get_rows(ictx.gptr(), ltptr, rtptr) }))
         })
     }
@@ -331,8 +367,9 @@ mk_gopinstances!((Add, add), (Sub, sub), (Mul, mul), (Div, div));
 
 #[cfg(test)]
 mod tests {
-    use crate::{context::*, gtensor::GMulMat, util::GType};
     use anyhow::Result;
+
+    use crate::{context::*, gtensor::GMulMat, util::GType};
 
     macro_rules! test_binop_simple {
         (
