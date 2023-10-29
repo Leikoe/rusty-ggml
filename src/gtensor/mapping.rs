@@ -1,7 +1,8 @@
 use ggml_sys_bleedingedge as gg;
 
-use super::tensor::*;
 use crate::{dims::*, util::GType, validation::*};
+
+use super::tensor::*;
 
 #[macro_export]
 /// Creates an anonymous function for use with [GTensor::map_unary].
@@ -65,8 +66,8 @@ macro_rules! map_binop (
 );
 
 impl<const DIMS: usize> GTensor<DIMS>
-where
-    Dim<DIMS>: DimValid,
+    where
+        Dim<DIMS>: DimValid,
 {
     /// Elementwise unary map operation on tensor `A`.
     /// Returns a new tensor.
@@ -100,7 +101,7 @@ where
         &self,
         fun: unsafe extern "C" fn(arg1: ::std::os::raw::c_int, arg2: *mut f32, arg3: *const f32),
     ) -> Self {
-        self.new_unary(|ctx, ictx, tptr| {
+        self.ctx.new_unary(self, |ctx, ictx, tptr| {
             if self.md.typ != GType::F32 {
                 Err(GTensorError::TypeMismatch)?;
             }
@@ -159,7 +160,7 @@ where
         ),
     ) -> Self {
         let rtyp = rhs.as_ref().md.typ;
-        self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
+        self.ctx.new_binary(self, rhs, |ctx, ictx, ltptr, rtptr| {
             if self.md.typ != GType::F32 || rtyp != GType::F32 {
                 Err(GTensorError::TypeMismatch)?;
             }

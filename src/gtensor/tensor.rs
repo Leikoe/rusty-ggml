@@ -1,6 +1,6 @@
 use std::{
     ptr::NonNull,
-    sync::{Arc, atomic::Ordering::SeqCst},
+    sync::Arc,
 };
 use std::ffi::CStr;
 
@@ -290,63 +290,6 @@ impl<const DIMS: usize> GTensor<DIMS>
     {
         self.ctx
             .delay_failure_with_icontext(|| (), |ictx| fun(&self.ctx, ictx, self.tptr.as_ptr()))
-    }
-
-    pub(crate) fn new_unary<const ODIMS: usize, F>(&self, fun: F) -> GTensor<ODIMS>
-        where
-            Dim<ODIMS>: DimValid,
-            F: FnOnce(
-                &GContext,
-                &mut IContext,
-                *mut gg::ggml_tensor,
-            ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
-    {
-        self.with_tensor_delay_failure(
-            || self.make_dead_clone(),
-            |ctx, ictx, tptr| {
-                let (mr, p) = fun(ctx, ictx, tptr)?;
-                unsafe { GTensor::<ODIMS>::new_from_ptr(ctx, ictx, Some(mr), p) }
-            },
-        )
-    }
-
-    // RHS dims enforced elsewhere if necessary.
-    pub(crate) fn new_binary<const RDIMS: usize, const ODIMS: usize, F, T>(
-        &self,
-        rhs: T,
-        fun: F,
-    ) -> GTensor<ODIMS>
-        where
-            Dim<RDIMS>: DimValid,
-            Dim<ODIMS>: DimValid,
-            F: FnOnce(
-                &GContext,
-                &mut IContext,
-                *mut gg::ggml_tensor,
-                *mut gg::ggml_tensor,
-            ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
-            T: AsRef<GTensor<RDIMS>>,
-    {
-        let rhs = rhs.as_ref();
-        if self.ctx.dead.load(SeqCst) || rhs.ctx.dead.load(SeqCst) {
-            self.ctx.dead.store(true, SeqCst);
-            rhs.ctx.dead.store(true, SeqCst);
-            return self.make_dead_clone();
-        }
-        // assert_eq!(
-        //     self.ctx.ptrval, rhs.ctx.ptrval,
-        //     "Cannot perform operation between tensors from different contexts!"
-        // );
-
-        self.ctx.delay_failure_with_icontext(
-            || self.make_dead_clone(),
-            |mut ictx| {
-                let ictx = &mut ictx;
-                let (ltptr, rtptr) = (self.tptr.as_ptr(), rhs.tptr.as_ptr());
-                let (mr, p) = fun(&self.ctx, ictx, ltptr, rtptr)?;
-                unsafe { GTensor::<ODIMS>::new_from_ptr(&self.ctx, ictx, Some(mr), p) }
-            },
-        )
     }
 }
 
@@ -657,7 +600,7 @@ impl<const DIMS: usize> GTensor<DIMS>
     ///
     /// **Note**: This immediately overwrites `self` with the copy.
     pub fn copy_from<T: AsRef<GTensor<DIMS>>>(&mut self, rhs: T) {
-        let nt = self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
+        let nt = self.ctx.new_binary(self, rhs, |ctx, ictx, ltptr, rtptr| {
             let md = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, [])
                 .fit_or_die()?;
             Ok((md, unsafe { gg::ggml_cpy(ictx.gptr(), rtptr, ltptr) }))

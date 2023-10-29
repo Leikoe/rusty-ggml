@@ -73,7 +73,7 @@ fn mnist_eval(model: &MnistModel, n_threads: usize, digit: &[f32], fname_cgraph:
     cur = cur.pool_2d(GOpPool::POOL_MAX, 2, 2, 2, 2, 0, 0);
     // Output shape after MaxPooling2D: (13 13 32 1)
     cur = model.conv2d_2_kernel.conv_2d(cur, 1, 1, 0, 0, 1, 1);
-    cur = cur.add(&model.conv2d_2_bias);
+    cur = cur.add_with_context(&model.conv2d_2_bias, &ctx0);
     cur = cur.relu();
 
     // Output shape after Conv2D: (11 11 64 1)

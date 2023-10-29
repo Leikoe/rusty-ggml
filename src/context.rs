@@ -3,6 +3,7 @@ use std::{ffi::{c_char, c_void}, ops, ptr, ptr::NonNull, sync::{
     atomic::{self, AtomicBool}, Mutex, MutexGuard,
 }};
 use std::ffi::CString;
+use std::sync::atomic::Ordering::SeqCst;
 
 use anyhow::{anyhow, bail, ensure, Result};
 use ggml_sys_bleedingedge as gg;
@@ -179,7 +180,6 @@ impl ScratchBuffer {
 /// [GContext].
 pub struct GContextBuilder {
     mem_size: usize,
-    mem_buffer: *mut c_void,
     no_alloc: bool,
 }
 
@@ -454,6 +454,67 @@ impl GContext {
     /// Returns the amount of memory GGML is currently using.
     pub fn used_mem(&self) -> Result<usize> {
         self.with_icontext_infallible(|ictx| unsafe { gg::ggml_used_mem(ictx.gptr()) })
+    }
+
+    pub(crate) fn new_unary<const IDIMS: usize, const ODIMS: usize, F, T>(&self, tensor: T, fun: F) -> GTensor<ODIMS>
+        where
+            Dim<IDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            F: FnOnce(
+                &GContext,
+                &mut IContext,
+                *mut gg::ggml_tensor,
+            ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
+            T: AsRef<GTensor<ODIMS>>,
+    {
+        let tensor = tensor.as_ref();
+        self.delay_failure_with_icontext(
+            || tensor.make_dead_clone(),
+            |ictx| {
+                let (mr, p) = fun(&self, ictx, tensor.tptr.as_ptr())?;
+                unsafe { GTensor::<ODIMS>::new_from_ptr(self, ictx, Some(mr), p) }
+            },
+        )
+    }
+
+    // RHS dims enforced elsewhere if necessary.
+    pub(crate) fn new_binary<const LDIMS: usize, const RDIMS: usize, const ODIMS: usize, F, L, R>(
+        &self,
+        lhs: L,
+        rhs: R,
+        fun: F,
+    ) -> GTensor<ODIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            F: FnOnce(
+                &GContext,
+                &mut IContext,
+                *mut gg::ggml_tensor,
+                *mut gg::ggml_tensor,
+            ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
+            L: AsRef<GTensor<LDIMS>>,
+            R: AsRef<GTensor<RDIMS>>,
+    {
+        let lhs = lhs.as_ref();
+        let rhs = rhs.as_ref();
+        if self.dead.load(SeqCst) || lhs.ctx.dead.load(SeqCst) || rhs.ctx.dead.load(SeqCst) {
+            self.dead.store(true, SeqCst);
+            lhs.ctx.dead.store(true, SeqCst);
+            rhs.ctx.dead.store(true, SeqCst);
+            return self.make_dead_clone();
+        }
+
+        self.delay_failure_with_icontext(
+            || lhs.make_dead_clone(),
+            |mut ictx| {
+                let ictx = &mut ictx;
+                let (ltptr, rtptr) = (lhs.tptr.as_ptr(), rhs.tptr.as_ptr());
+                let (mr, p) = fun(&self, ictx, ltptr, rtptr)?;
+                unsafe { GTensor::<ODIMS>::new_from_ptr(&self, ictx, Some(mr), p) }
+            },
+        )
     }
 }
 
