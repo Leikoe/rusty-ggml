@@ -1,19 +1,38 @@
 use ggml_sys_bleedingedge as gg;
 
 use crate::{dims::*, validation::*};
+use crate::context::GContext;
+use crate::util::GType;
+use std::ops;
 
 use super::tensor::*;
 
-macro_rules! mk_simple_bops {
+macro_rules! mk_simple_bops_context {
   ( $( $(#[$attr:meta])* [$opname:ident, $gfname:ident]),* $(,)? ) => {$(
     $(#[$attr])*
-    pub fn $opname<L: AsRef<GTensor<DIMS>>, R: AsRef<GTensor<DIMS>>>(&self, lhs: L, rhs: R) -> GTensor<DIMS> {
+    pub fn $opname<const LDIMS: usize, const RDIMS: usize, const ODIMS: usize, L: AsRef<GTensor<LDIMS>>, R: AsRef<GTensor<RDIMS>>>(&self, lhs: L, rhs: R) -> GTensor<ODIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid
+    {
+        let lhs = lhs.as_ref();
+        let rhs = rhs.as_ref();
         self.new_binary(lhs, rhs, |ctx, ictx, ltptr, rtptr| {
             let mr = GMemoryRequest::estimate_tensor_request_ictx(
                 ctx, ictx, lhs.md.typ, lhs.md.shape
             ).fit_or_die()?;
             Ok((mr, unsafe { gg::$gfname(ictx.gptr(), ltptr, rtptr) }))
         })
+    }
+  )* }
+}
+
+macro_rules! mk_simple_bops {
+  ( $( $(#[$attr:meta])* [$opname:ident, $gfname:ident]),* $(,)? ) => {$(
+    $(#[$attr])*
+    pub fn $opname<R: AsRef<GTensor<DIMS>>>(&self, rhs: R) -> GTensor<DIMS> {
+        self.ctx.$opname(self, rhs)
     }
   )* }
 }
@@ -44,7 +63,349 @@ macro_rules! mk_gopinstances {
     )*};
 }
 
-impl<const DIMS: usize> GContext
+impl GContext
+
+{
+    mk_simple_bops_context! {
+        /// Add tensor `B` to tensor `A`.
+        /// Returns a new tensor.
+        ///
+        /// `a.add(b)` or `a + b`
+        ///
+        /// **Invariants**
+        /// 1. `A` and `B` must have the same shape.
+        /// 2. Result will have the shape of `A`.
+        ///
+        /// **Example** (pseudocode):
+        /// ```ignore
+        /// let a = [2, 2, 2];
+        /// let b = [1, 1, 1];
+        /// let result = a.add(b);
+        /// assert_eq!(result, [3, 3, 3]);
+        /// ```
+        [add,ggml_add],
+        /// Subtract tensor `B` from tensor `A`.
+        /// Returns a new tensor.
+        ///
+        /// `a.sub(b)` or `a - b`
+        ///
+        /// **Invariants**
+        /// 1. `A` and `B` must have the same shape.
+        /// 2. Result will have the shape of `A`.
+        ///
+        /// **Example** (pseudocode):
+        /// ```ignore
+        /// let a = [3, 3, 3];
+        /// let b = [1, 1, 1];
+        /// let result = a.div(b);
+        /// assert_eq!(result, [2, 2, 2]);
+        /// ```
+        [sub,ggml_sub],
+
+        /// Multiply tensor `A` by tensor `B`.
+        /// Returns a new tensor.
+        ///
+        /// **Note**: This is elementwise multiplication, not matrix multiplication.
+        ///
+        /// `a.mul(b)` or `a * b`
+        ///
+        /// **Invariants**
+        /// 1. `A` and `B` must have the same shape.
+        /// 2. Result will have the shape of `A`.
+        ///
+        /// **Example** (pseudocode):
+        /// ```ignore
+        /// let a = [3, 3, 3];
+        /// let b = [2, 2, 2];
+        /// let result = ctx0.mul(a, b);
+        /// assert_eq!(result, [6, 6, 6]);
+        /// ```
+        [mul,ggml_mul],
+
+        /// Elementwise divide tensor `A` by tensor `B`.
+        /// Returns a new tensor.
+        ///
+        /// `a.div(b)` or `a / b`
+        ///
+        /// **Invariants**
+        /// 1. `A` and `B` must have the same shape.
+        /// 2. Result will have the shape of `A`.
+        ///
+        /// **Example** (pseudocode):
+        /// ```ignore
+        /// let a = [6, 6, 6];
+        /// let b = [2, 2, 2];
+        /// let result = ctx0.div(a, b);
+        /// assert_eq!(result, [3, 3, 3]);
+        /// ```
+        [div,ggml_div],
+    }
+
+    /// Scale tensor `A` by tensor `B`.
+    /// This is basically just scalar multiplication.
+    /// Returns a new tensor.
+    ///
+    /// `a.scale(b)`
+    ///
+    /// **Invariants**
+    /// 1. Tensor `B` must have shape `[1]`. (AKA 1d tensor with a single item.)
+    /// 2. Result will have the shape of `A`.
+    ///
+    /// **Example** (pseudocode):
+    /// ```ignore
+    /// let a = [3, 3, 3];
+    /// let b = [2];
+    /// let result = a.scale(b);
+    /// assert_eq!(result, [6, 6, 6]);
+    /// ```
+    pub fn scale<const LDIMS: usize, const RDIMS: usize, L: AsRef<GTensor<LDIMS>>, R: AsRef<GTensor<RDIMS>>>(&self, lhs: L, rhs: R) -> GTensor<LDIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+            DimPair<1, RDIMS>: DimEq,
+    {
+        let lhs = lhs.as_ref();
+        let rhs = rhs.as_ref();
+        self.new_binary(lhs, rhs, |ctx, ictx, ltptr, rtptr| {
+            let mr =
+                GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, lhs.md.typ, lhs.md.shape)
+                    .fit_or_die()?;
+            Ok((mr, unsafe { gg::ggml_scale(ictx.gptr(), ltptr, rtptr) }))
+        })
+    }
+
+    // FIXME: Verify this is correct.
+    /// Repeat tensor `A` based on the shape of tensor `B`.
+    /// The content of `B` is not used.
+    /// Returns a new tensor.
+    ///
+    /// `a.repeat(b)`
+    ///
+    /// **Invariants**
+    /// 1. Both `A` and `B` must be 1d or 2d tensors.
+    /// 2. Neither `A` or `B` can be transposed or permuted.
+    /// 3. The shape of `B` must be divisible by the shape of `A`. In other words,
+    ///    `b_rows % a_rows` and `b_cols % a_cols` must both be `0`.
+    /// 4. Result will have the shape of `B`.
+    ///
+    /// **Example** (pseudocode):
+    /// ```ignore
+    /// let a =
+    ///     [ [2, 3],
+    ///       [4, 5] ];
+    /// let b =
+    ///     [ [1, 1, 1, 1],
+    ///       [1, 1, 1, 1],
+    ///       [1, 1, 1, 1],
+    ///       [1, 1, 1, 1] ];
+    /// let expected =
+    ///     [ [2, 3, 2, 3],
+    ///       [4, 5, 4, 5],
+    ///       [2, 3, 2, 3],
+    ///       [4, 5, 4, 5] ];
+    /// let result = a.repeat(b);
+    /// assert_eq!(result, expected);
+    /// ```
+    pub fn repeat<const LDIMS: usize, const RDIMS: usize, L: AsRef<GTensor<LDIMS>>, R: AsRef<GTensor<RDIMS>>>(&self, lhs: L, rhs: R) -> GTensor<RDIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+            DimPair<LDIMS, 3>: DimLt,
+            DimPair<RDIMS, 3>: DimLt,
+    {
+        let lhs = lhs.as_ref();
+        let rmd = rhs.as_ref().md.clone();
+        self.new_binary(lhs, rhs, |ctx, ictx, ltptr, rtptr| {
+            let mr =
+                GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, lhs.md.typ, rmd.shape)
+                    .fit_or_die()?;
+            Ok((mr, unsafe { gg::ggml_repeat(ictx.gptr(), ltptr, rtptr) }))
+        })
+    }
+
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    pub fn conv_1d<const LDIMS: usize, const RDIMS: usize, const ODIMS: usize, L: AsRef<GTensor<LDIMS>>, R: AsRef<GTensor<RDIMS>>>(
+        &self,
+        lhs: L,
+        rhs: R,
+        s0: usize,
+        p0: usize,
+        d0: usize,
+    ) -> GTensor<LDIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<LDIMS, 2>: DimGtE,
+            DimPair<LDIMS, 4>: DimLt,
+            DimPair<RDIMS, 2>: DimGtE,
+            DimPair<ODIMS, 2>: DimEq,
+    {
+        let lhs = lhs.as_ref();
+        let rhs = rhs.as_ref();
+        let rmd = rhs.as_ref().md.clone();
+        self.new_binary(lhs, rhs, |ctx, ictx, ltptr, rtptr| {
+            // FIXME: Double check this calculation.
+            let shp = match ODIMS {
+                2 => vec![lhs.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize],
+                3 => vec![lhs.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize / 2],
+                _ => Err(GTensorError::InvalidOperation)?,
+            };
+            let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, shp)
+                .fit_or_die()?;
+            Ok((mr, unsafe {
+                gg::ggml_conv_1d(ictx.gptr(), ltptr, rtptr, s0 as i32, p0 as i32, d0 as i32)
+            }))
+        })
+    }
+
+    // FIXME: wtf is ODIMS ?
+    pub fn conv_2d<const LDIMS: usize, const RDIMS: usize, const ODIMS: usize, L: AsRef<GTensor<LDIMS>>, R: AsRef<GTensor<RDIMS>>>(
+        &self,
+        lhs: L,
+        rhs: R,
+        s0: usize,
+        s1: usize,
+        p0: usize,
+        p1: usize,
+        d0: usize,
+        d1: usize,
+    ) -> GTensor<LDIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<LDIMS, 2>: DimGtE,
+            DimPair<LDIMS, 5>: DimLt,
+            DimPair<RDIMS, 2>: DimGtE,
+            DimPair<ODIMS, 2>: DimEq,
+    {
+        let lhs = lhs.as_ref();
+        let rhs = rhs.as_ref();
+        // let rmd = rhs.as_ref().md.clone();
+        self.new_binary(lhs, rhs, |ctx, ictx, ltptr, rtptr| {
+            // FIXME: Double check this calculation.
+            // let shp = match ODIMS {
+            //         2 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize],
+            //         3 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize / 2],
+            //         _ => Err(GTensorError::InvalidOperation)?,
+            // };
+            let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, [])
+                .fit_or_die()?;
+            Ok((mr, unsafe {
+                gg::ggml_conv_2d(ictx.gptr(), ltptr, rtptr,
+                                 s0 as i32, s1 as i32, p0 as i32, p1 as i32, d0 as i32, d1 as i32)
+            }))
+        })
+    }
+
+    // FIXME: Verify this is correct.
+    /// Create a view `A` of based on the specified order of dimensions.
+    /// Returns a new tensor.
+    ///
+    /// **Note**: Dimensions start from `0`, so `0` is the 1st dimension, `3` is the 4th.
+    ///
+    /// `a.permute([4, 2, 1, 1])`
+    ///
+    /// **Invariants**
+    /// 1. The axes must be unique. `[0, 0, 1, 2]` would be invalid, for example.
+    /// 2. The axes must be a valid dimension. In other words, a number between `0` and `3` inclusive.
+    ///
+    /// **Example** (pseudocode):
+    /// ```ignore
+    /// let a =
+    ///     [ [1, 1, 1],
+    ///       [2, 2, 3],
+    ///       [3, 3, 3] ];
+    /// let expected =
+    ///     [ [1, 2, 3],
+    ///       [1, 2, 3],
+    ///       [1, 2, 3] ];
+    /// let result = a.permute([1, 0, 2, 3]);
+    /// assert_eq!(result, expected);
+    /// ```
+    pub fn permute<const DIMS: usize, T: AsRef<GTensor<DIMS>>>(&self, tensor: T, axes: [usize; 4]) -> GTensor<DIMS>
+        where
+            Dim<DIMS>: DimValid
+    {
+        let tensor = tensor.as_ref();
+        self.new_unary(tensor, |ctx, ictx, tptr| {
+            let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, tensor.md.typ, [])
+                .fit_or_die()?;
+            unsafe {
+                Ok((
+                    mr,
+                    gg::ggml_permute(
+                        ictx.gptr(),
+                        tptr,
+                        axes[1] as i32,
+                        axes[0] as i32,
+                        axes[2] as i32,
+                        axes[3] as i32,
+                    ),
+                ))
+            }
+        })
+    }
+
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    pub fn reshape_with<const LDIMS: usize, const RDIMS: usize, L: AsRef<GTensor<LDIMS>>, R: AsRef<GTensor<RDIMS>>>(
+        &self,
+        lhs: L,
+        rhs: R,
+    ) -> GTensor<RDIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+    {
+        let lhs = lhs.as_ref();
+        let rhs = rhs.as_ref();
+        let rmd = rhs.as_ref().md.clone();
+        self.new_binary(lhs, rhs, |ctx, ictx, ltptr, rtptr| {
+            let mr =
+                GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, lhs.md.typ, rmd.shape)
+                    .fit_or_die()?;
+            Ok((mr, unsafe { gg::ggml_reshape(ictx.gptr(), ltptr, rtptr) }))
+        })
+    }
+
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    pub fn get_rows<const LDIMS: usize, const RDIMS: usize, const ODIMS: usize, L: AsRef<GTensor<LDIMS>>, R: AsRef<GTensor<RDIMS>>>(
+        &self,
+        lhs: L,
+        rhs: R,
+    ) -> GTensor<ODIMS>
+        where
+            Dim<LDIMS>: DimValid,
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<LDIMS, 2>: DimGtE,
+            DimPair<RDIMS, 2>: DimLt,
+            DimPair<ODIMS, 2>: DimEq,
+    {
+        let lhs = lhs.as_ref();
+        let rhs = rhs.as_ref();
+        let rmd = rhs.as_ref().md.clone();
+        self.new_binary(lhs, rhs, |ctx, ictx, ltptr, rtptr| {
+            let mr = GMemoryRequest::estimate_tensor_request_ictx(
+                ctx,
+                ictx,
+                GType::F32,
+                [lhs.md.shape[1], rmd.shape[0]],
+            )
+                .fit_or_die()?;
+            Ok((mr, unsafe { gg::ggml_get_rows(ictx.gptr(), ltptr, rtptr) }))
+        })
+    }
+}
+
+impl<const DIMS: usize> GTensor<DIMS>
     where
         Dim<DIMS>: DimValid,
 {
@@ -99,7 +460,7 @@ impl<const DIMS: usize> GContext
         /// ```ignore
         /// let a = [3, 3, 3];
         /// let b = [2, 2, 2];
-        /// let result = a.mul(b);
+        /// let result = ctx0.mul(a, b);
         /// assert_eq!(result, [6, 6, 6]);
         /// ```
         [mul,ggml_mul],
@@ -117,339 +478,264 @@ impl<const DIMS: usize> GContext
         /// ```ignore
         /// let a = [6, 6, 6];
         /// let b = [2, 2, 2];
-        /// let result = a.div(b);
+        /// let result = ctx0.div(a, b);
         /// assert_eq!(result, [3, 3, 3]);
         /// ```
         [div,ggml_div],
     }
+
+    /// Scale tensor `A` by tensor `B`.
+    /// This is basically just scalar multiplication.
+    /// Returns a new tensor.
+    ///
+    /// `a.scale(b)`
+    ///
+    /// **Invariants**
+    /// 1. Tensor `B` must have shape `[1]`. (AKA 1d tensor with a single item.)
+    /// 2. Result will have the shape of `A`.
+    ///
+    /// **Example** (pseudocode):
+    /// ```ignore
+    /// let a = [3, 3, 3];
+    /// let b = [2];
+    /// let result = a.scale(b);
+    /// assert_eq!(result, [6, 6, 6]);
+    /// ```
+    pub fn scale<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(&self, rhs: T) -> Self
+        where
+            Dim<RDIMS>: DimValid,
+            DimPair<1, RDIMS>: DimEq,
+    {
+        self.ctx.scale(self, rhs)
+    }
+
+    // FIXME: Verify this is correct.
+    /// Repeat tensor `A` based on the shape of tensor `B`.
+    /// The content of `B` is not used.
+    /// Returns a new tensor.
+    ///
+    /// `a.repeat(b)`
+    ///
+    /// **Invariants**
+    /// 1. Both `A` and `B` must be 1d or 2d tensors.
+    /// 2. Neither `A` or `B` can be transposed or permuted.
+    /// 3. The shape of `B` must be divisible by the shape of `A`. In other words,
+    ///    `b_rows % a_rows` and `b_cols % a_cols` must both be `0`.
+    /// 4. Result will have the shape of `B`.
+    ///
+    /// **Example** (pseudocode):
+    /// ```ignore
+    /// let a =
+    ///     [ [2, 3],
+    ///       [4, 5] ];
+    /// let b =
+    ///     [ [1, 1, 1, 1],
+    ///       [1, 1, 1, 1],
+    ///       [1, 1, 1, 1],
+    ///       [1, 1, 1, 1] ];
+    /// let expected =
+    ///     [ [2, 3, 2, 3],
+    ///       [4, 5, 4, 5],
+    ///       [2, 3, 2, 3],
+    ///       [4, 5, 4, 5] ];
+    /// let result = a.repeat(b);
+    /// assert_eq!(result, expected);
+    /// ```
+    pub fn repeat<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(&self, rhs: T) -> GTensor<RDIMS>
+        where
+            Dim<RDIMS>: DimValid,
+            DimPair<DIMS, 3>: DimLt,
+            DimPair<RDIMS, 3>: DimLt,
+    {
+        self.ctx.repeat(self, rhs)
+    }
+
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    pub fn conv_1d<const RDIMS: usize, const ODIMS: usize, T: AsRef<GTensor<RDIMS>>>(
+        &self,
+        rhs: T,
+        s0: usize,
+        p0: usize,
+        d0: usize,
+    ) -> Self
+        where
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<DIMS, 2>: DimGtE,
+            DimPair<DIMS, 4>: DimLt,
+            DimPair<RDIMS, 2>: DimGtE,
+            DimPair<ODIMS, 2>: DimEq,
+    {
+        self.ctx.conv_1d(self, rhs, s0, p0, d0)
+    }
+
+    pub fn conv_2d<const RDIMS: usize, const ODIMS: usize, T: AsRef<GTensor<RDIMS>>>(
+        &self,
+        rhs: T,
+        s0: usize,
+        s1: usize,
+        p0: usize,
+        p1: usize,
+        d0: usize,
+        d1: usize,
+    ) -> Self
+        where
+            Dim<RDIMS>: DimValid,
+            Dim<ODIMS>: DimValid,
+            DimPair<DIMS, 2>: DimGtE,
+            DimPair<DIMS, 5>: DimLt,
+            DimPair<RDIMS, 2>: DimGtE,
+            DimPair<ODIMS, 2>: DimEq,
+    {
+        self.ctx.conv_2d(self, rhs, s0, s1, p0, p1, d0, d1)
+    }
+
+    // FIXME: Verify this is correct.
+    /// Create a view `A` of based on the specified order of dimensions.
+    /// Returns a new tensor.
+    ///
+    /// **Note**: Dimensions start from `0`, so `0` is the 1st dimension, `3` is the 4th.
+    ///
+    /// `a.permute([4, 2, 1, 1])`
+    ///
+    /// **Invariants**
+    /// 1. The axes must be unique. `[0, 0, 1, 2]` would be invalid, for example.
+    /// 2. The axes must be a valid dimension. In other words, a number between `0` and `3` inclusive.
+    ///
+    /// **Example** (pseudocode):
+    /// ```ignore
+    /// let a =
+    ///     [ [1, 1, 1],
+    ///       [2, 2, 3],
+    ///       [3, 3, 3] ];
+    /// let expected =
+    ///     [ [1, 2, 3],
+    ///       [1, 2, 3],
+    ///       [1, 2, 3] ];
+    /// let result = a.permute([1, 0, 2, 3]);
+    /// assert_eq!(result, expected);
+    /// ```
+    pub fn permute(&self, axes: [usize; 4]) -> Self {
+        self.ctx.permute(self, axes)
+    }
+
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    /// # !!!! FIXME !!!!
+    pub fn reshape_with<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(
+        &self,
+        rhs: T,
+    ) -> GTensor<RDIMS>
+        where
+            Dim<RDIMS>: DimValid,
+    {
+        self.ctx.reshape_with(self, rhs)
+    }
+
+    // /// # !!!! FIXME !!!!
+    // /// # !!!! FIXME !!!!
+    // /// # !!!! FIXME !!!!
+    // pub fn get_rows<const RDIMS: usize, const ODIMS: usize, T: AsRef<GTensor<RDIMS>>>(
+    //     &self,
+    //     rhs: T,
+    // ) -> GTensor<ODIMS>
+    //     where
+    //         Dim<RDIMS>: DimValid,
+    //         Dim<ODIMS>: DimValid,
+    //         DimPair<DIMS, 2>: DimGtE,
+    //         DimPair<RDIMS, 2>: DimLt,
+    //         DimPair<ODIMS, 2>: DimEq,
+    // {
+    //     self.ctx.get_rows(self, rhs)
+    // }
 }
 
-// impl<const DIMS: usize> GTensor<DIMS>
-//     where
-//         Dim<DIMS>: DimValid,
-// {
-//     /// Scale tensor `A` by tensor `B`.
-//     /// This is basically just scalar multiplication.
-//     /// Returns a new tensor.
-//     ///
-//     /// `a.scale(b)`
-//     ///
-//     /// **Invariants**
-//     /// 1. Tensor `B` must have shape `[1]`. (AKA 1d tensor with a single item.)
-//     /// 2. Result will have the shape of `A`.
-//     ///
-//     /// **Example** (pseudocode):
-//     /// ```ignore
-//     /// let a = [3, 3, 3];
-//     /// let b = [2];
-//     /// let result = a.scale(b);
-//     /// assert_eq!(result, [6, 6, 6]);
-//     /// ```
-//     pub fn scale<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(&self, rhs: T) -> Self
-//         where
-//             Dim<RDIMS>: DimValid,
-//             DimPair<1, RDIMS>: DimEq,
-//     {
-//         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
-//             let mr =
-//                 GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, self.md.shape)
-//                     .fit_or_die()?;
-//             Ok((mr, unsafe { gg::ggml_scale(ictx.gptr(), ltptr, rtptr) }))
-//         })
-//     }
-//
-//     // FIXME: Verify this is correct.
-//     /// Repeat tensor `A` based on the shape of tensor `B`.
-//     /// The content of `B` is not used.
-//     /// Returns a new tensor.
-//     ///
-//     /// `a.repeat(b)`
-//     ///
-//     /// **Invariants**
-//     /// 1. Both `A` and `B` must be 1d or 2d tensors.
-//     /// 2. Neither `A` or `B` can be transposed or permuted.
-//     /// 3. The shape of `B` must be divisible by the shape of `A`. In other words,
-//     ///    `b_rows % a_rows` and `b_cols % a_cols` must both be `0`.
-//     /// 4. Result will have the shape of `B`.
-//     ///
-//     /// **Example** (pseudocode):
-//     /// ```ignore
-//     /// let a =
-//     ///     [ [2, 3],
-//     ///       [4, 5] ];
-//     /// let b =
-//     ///     [ [1, 1, 1, 1],
-//     ///       [1, 1, 1, 1],
-//     ///       [1, 1, 1, 1],
-//     ///       [1, 1, 1, 1] ];
-//     /// let expected =
-//     ///     [ [2, 3, 2, 3],
-//     ///       [4, 5, 4, 5],
-//     ///       [2, 3, 2, 3],
-//     ///       [4, 5, 4, 5] ];
-//     /// let result = a.repeat(b);
-//     /// assert_eq!(result, expected);
-//     /// ```
-//     pub fn repeat<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(&self, rhs: T) -> GTensor<RDIMS>
-//         where
-//             Dim<RDIMS>: DimValid,
-//             DimPair<DIMS, 3>: DimLt,
-//             DimPair<RDIMS, 3>: DimLt,
-//     {
-//         let rmd = rhs.as_ref().md.clone();
-//         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
-//             let mr =
-//                 GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, rmd.shape)
-//                     .fit_or_die()?;
-//             Ok((mr, unsafe { gg::ggml_repeat(ictx.gptr(), ltptr, rtptr) }))
-//         })
-//     }
-//
-//     /// # !!!! FIXME !!!!
-//     /// # !!!! FIXME !!!!
-//     /// # !!!! FIXME !!!!
-//     pub fn conv_1d<const RDIMS: usize, const ODIMS: usize, T: AsRef<GTensor<RDIMS>>>(
-//         &self,
-//         rhs: T,
-//         s0: usize,
-//         p0: usize,
-//         d0: usize,
-//     ) -> Self
-//         where
-//             Dim<RDIMS>: DimValid,
-//             Dim<ODIMS>: DimValid,
-//             DimPair<DIMS, 2>: DimGtE,
-//             DimPair<DIMS, 4>: DimLt,
-//             DimPair<RDIMS, 2>: DimGtE,
-//             DimPair<ODIMS, 2>: DimEq,
-//     {
-//         let rmd = rhs.as_ref().md.clone();
-//         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
-//             // FIXME: Double check this calculation.
-//             let shp = match ODIMS {
-//                 2 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize],
-//                 3 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize / 2],
-//                 _ => Err(GTensorError::InvalidOperation)?,
-//             };
-//             let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, shp)
-//                 .fit_or_die()?;
-//             Ok((mr, unsafe {
-//                 gg::ggml_conv_1d(ictx.gptr(), ltptr, rtptr, s0 as i32, p0 as i32, d0 as i32)
-//             }))
-//         })
-//     }
-//
-//     pub fn conv_2d<const RDIMS: usize, const ODIMS: usize, T: AsRef<GTensor<RDIMS>>>(
-//         &self,
-//         rhs: T,
-//         s0: usize,
-//         s1: usize,
-//         p0: usize,
-//         p1: usize,
-//         d0: usize,
-//         d1: usize,
-//     ) -> Self
-//         where
-//             Dim<RDIMS>: DimValid,
-//             Dim<ODIMS>: DimValid,
-//             DimPair<DIMS, 2>: DimGtE,
-//             DimPair<DIMS, 5>: DimLt,
-//             DimPair<RDIMS, 2>: DimGtE,
-//             DimPair<ODIMS, 2>: DimEq,
-//     {
-//         // let rmd = rhs.as_ref().md.clone();
-//         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
-//             // FIXME: Double check this calculation.
-//             // let shp = match ODIMS {
-//             //         2 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize],
-//             //         3 => vec![self.md.ggml_ne[2] as usize, rmd.ggml_ne[1] as usize / 2],
-//             //         _ => Err(GTensorError::InvalidOperation)?,
-//             // };
-//             let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, [])
-//                 .fit_or_die()?;
-//             Ok((mr, unsafe {
-//                 gg::ggml_conv_2d(ictx.gptr(), ltptr, rtptr,
-//                                  s0 as i32, s1 as i32, p0 as i32, p1 as i32, d0 as i32, d1 as i32)
-//             }))
-//         })
-//     }
-//
-//     // FIXME: Verify this is correct.
-//     /// Create a view `A` of based on the specified order of dimensions.
-//     /// Returns a new tensor.
-//     ///
-//     /// **Note**: Dimensions start from `0`, so `0` is the 1st dimension, `3` is the 4th.
-//     ///
-//     /// `a.permute([4, 2, 1, 1])`
-//     ///
-//     /// **Invariants**
-//     /// 1. The axes must be unique. `[0, 0, 1, 2]` would be invalid, for example.
-//     /// 2. The axes must be a valid dimension. In other words, a number between `0` and `3` inclusive.
-//     ///
-//     /// **Example** (pseudocode):
-//     /// ```ignore
-//     /// let a =
-//     ///     [ [1, 1, 1],
-//     ///       [2, 2, 3],
-//     ///       [3, 3, 3] ];
-//     /// let expected =
-//     ///     [ [1, 2, 3],
-//     ///       [1, 2, 3],
-//     ///       [1, 2, 3] ];
-//     /// let result = a.permute([1, 0, 2, 3]);
-//     /// assert_eq!(result, expected);
-//     /// ```
-//     pub fn permute(&self, axes: [usize; 4]) -> Self {
-//         self.new_unary(|ctx, ictx, tptr| {
-//             let mr = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, [])
-//                 .fit_or_die()?;
-//             unsafe {
-//                 Ok((
-//                     mr,
-//                     gg::ggml_permute(
-//                         ictx.gptr(),
-//                         tptr,
-//                         axes[1] as i32,
-//                         axes[0] as i32,
-//                         axes[2] as i32,
-//                         axes[3] as i32,
-//                     ),
-//                 ))
-//             }
-//         })
-//     }
-//
-//     /// # !!!! FIXME !!!!
-//     /// # !!!! FIXME !!!!
-//     /// # !!!! FIXME !!!!
-//     pub fn reshape_with<const RDIMS: usize, T: AsRef<GTensor<RDIMS>>>(
-//         &self,
-//         rhs: T,
-//     ) -> GTensor<RDIMS>
-//         where
-//             Dim<RDIMS>: DimValid,
-//     {
-//         let rmd = rhs.as_ref().md.clone();
-//         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
-//             let mr =
-//                 GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, self.md.typ, rmd.shape)
-//                     .fit_or_die()?;
-//             Ok((mr, unsafe { gg::ggml_reshape(ictx.gptr(), ltptr, rtptr) }))
-//         })
-//     }
-//
-//     /// # !!!! FIXME !!!!
-//     /// # !!!! FIXME !!!!
-//     /// # !!!! FIXME !!!!
-//     pub fn get_rows<const RDIMS: usize, const ODIMS: usize, T: AsRef<GTensor<RDIMS>>>(
-//         &self,
-//         rhs: T,
-//     ) -> GTensor<ODIMS>
-//         where
-//             Dim<RDIMS>: DimValid,
-//             Dim<ODIMS>: DimValid,
-//             DimPair<DIMS, 2>: DimGtE,
-//             DimPair<RDIMS, 2>: DimLt,
-//             DimPair<ODIMS, 2>: DimEq,
-//     {
-//         let rmd = rhs.as_ref().md.clone();
-//         self.new_binary(rhs, |ctx, ictx, ltptr, rtptr| {
-//             let mr = GMemoryRequest::estimate_tensor_request_ictx(
-//                 ctx,
-//                 ictx,
-//                 GType::F32,
-//                 [self.md.shape[1], rmd.shape[0]],
-//             )
-//                 .fit_or_die()?;
-//             Ok((mr, unsafe { gg::ggml_get_rows(ictx.gptr(), ltptr, rtptr) }))
-//         })
-//     }
-// }
-//
-// mk_gopinstances!((Add, add), (Sub, sub), (Mul, mul), (Div, div));
-//
-// #[cfg(test)]
-// mod tests {
-//     use anyhow::Result;
-//
-//     use crate::{context::*, gtensor::GMulMat, util::GType};
-//
-//     macro_rules! test_binop_simple {
-//         (
-//             $fname:ident ; $meth:ident(
-//              $input_a:expr ;
-//              $shape_a:expr ,
-//              $input_b:expr ;
-//              $shape_b:expr =>
-//              $expect:expr
-//         ) ) => {
-//             #[test]
-//             pub fn $fname() -> Result<()> {
-//                 let expect = $expect;
-//                 let mut output = expect.clone();
-//                 let ctx = GContextBuilder::new().mem_size(1024 * 1024).build()?;
-//                 // let mut ctx = GContextBuilder::new().mem_size(719).build()?;
-//                 // let bid = ctx.register_scratch_buffer(ScratchBuffer::new(195))?;
-//                 // ctx.set_scratch_buffer(Some(bid))?;
-//                 let mut g = GGraph::new(1);
-//                 let mut ta = ctx.tensor(GType::F32, $shape_a)?;
-//                 ta.populate_f32($input_a);
-//                 let mut tb = ctx.tensor(GType::F32, $shape_b)?;
-//                 tb.populate_f32($input_b);
-//                 let t2 = ta.$meth(tb);
-//                 g.build_forward_expand(&t2)?;
-//                 ctx.compute(&mut g)?;
-//                 t2.copy_to_slice_f32(&mut output)?;
-//                 assert_eq!(output, expect);
-//                 Ok(())
-//             }
-//         };
-//     }
-//
-//     test_binop_simple!(test_add ; add(
-//         [2.0, 2.0, 2.0]; [3],
-//         [1.0, 1.0, 1.0]; [3] => [3.0, 3.0, 3.0]
-//     ));
-//
-//     test_binop_simple!(test_sub ; sub(
-//         [3.0, 3.0, 3.0]; [3],
-//         [1.0, 1.0, 1.0]; [3] => [2.0, 2.0, 2.0]
-//     ));
-//
-//     test_binop_simple!(test_mul ; mul(
-//         [3.0, 3.0, 3.0]; [3],
-//         [2.0, 2.0, 2.0]; [3] => [6.0, 6.0, 6.0]
-//     ));
-//
-//     test_binop_simple!(test_div ; div(
-//         [6.0, 6.0, 6.0]; [3],
-//         [2.0, 2.0, 2.0]; [3] => [3.0, 3.0, 3.0]
-//     ));
-//
-//     test_binop_simple!(test_mul_mat ; mul_mat(
-//         [1.0, 1.0, 2.0, 2.0]; [2, 2],
-//         [2.0, 2.0]; [2]
-//         => [4.0, 8.0]
-//     ));
-//
-//     test_binop_simple!(test_scale ; scale(
-//         [3.0, 3.0, 3.0]; [3],
-//         [2.0]; [1] => [6.0, 6.0, 6.0]
-//     ));
-//
-//     test_binop_simple!(test_repeat ; repeat(
-//         [2.0, 3.0, 4.0, 5.0]; [2, 2],
-//         [
-//             1.0, 1.0, 1.0, 1.0,
-//             1.0, 1.0, 1.0, 1.0,
-//             1.0, 1.0, 1.0, 1.0,
-//             1.0, 1.0, 1.0, 1.0,
-//         ]; [4, 4] =>
-//         [
-//             2.0, 3.0, 2.0, 3.0,
-//             4.0, 5.0, 4.0, 5.0,
-//             2.0, 3.0, 2.0, 3.0,
-//             4.0, 5.0, 4.0, 5.0,
-//         ]
-//     ));
-// }
+mk_gopinstances!((Add, add), (Sub, sub), (Mul, mul), (Div, div));
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use crate::{context::*, gtensor::GMulMat, util::GType};
+
+    macro_rules! test_binop_simple {
+        (
+            $fname:ident ; $meth:ident(
+             $input_a:expr ;
+             $shape_a:expr ,
+             $input_b:expr ;
+             $shape_b:expr =>
+             $expect:expr
+        ) ) => {
+            #[test]
+            pub fn $fname() -> Result<()> {
+                let expect = $expect;
+                let mut output = expect.clone();
+                let ctx = GContextBuilder::new().mem_size(1024 * 1024).build()?;
+                // let mut ctx = GContextBuilder::new().mem_size(719).build()?;
+                // let bid = ctx.register_scratch_buffer(ScratchBuffer::new(195))?;
+                // ctx.set_scratch_buffer(Some(bid))?;
+                let mut g = GGraph::new(1);
+                let mut ta = ctx.tensor(GType::F32, $shape_a)?;
+                ta.populate_f32($input_a);
+                let mut tb = ctx.tensor(GType::F32, $shape_b)?;
+                tb.populate_f32($input_b);
+                let t2 = ta.$meth(tb);
+                g.build_forward_expand(&t2)?;
+                ctx.compute(&mut g)?;
+                t2.copy_to_slice_f32(&mut output)?;
+                assert_eq!(output, expect);
+                Ok(())
+            }
+        };
+    }
+
+    test_binop_simple!(test_add ; add(
+        [2.0, 2.0, 2.0]; [3],
+        [1.0, 1.0, 1.0]; [3] => [3.0, 3.0, 3.0]
+    ));
+
+    test_binop_simple!(test_sub ; sub(
+        [3.0, 3.0, 3.0]; [3],
+        [1.0, 1.0, 1.0]; [3] => [2.0, 2.0, 2.0]
+    ));
+
+    test_binop_simple!(test_mul ; mul(
+        [3.0, 3.0, 3.0]; [3],
+        [2.0, 2.0, 2.0]; [3] => [6.0, 6.0, 6.0]
+    ));
+
+    test_binop_simple!(test_div ; div(
+        [6.0, 6.0, 6.0]; [3],
+        [2.0, 2.0, 2.0]; [3] => [3.0, 3.0, 3.0]
+    ));
+
+    test_binop_simple!(test_mul_mat ; mul_mat(
+        [1.0, 1.0, 2.0, 2.0]; [2, 2],
+        [2.0, 2.0]; [2]
+        => [4.0, 8.0]
+    ));
+
+    test_binop_simple!(test_scale ; scale(
+        [3.0, 3.0, 3.0]; [3],
+        [2.0]; [1] => [6.0, 6.0, 6.0]
+    ));
+
+    test_binop_simple!(test_repeat ; repeat(
+        [2.0, 3.0, 4.0, 5.0]; [2, 2],
+        [
+            1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0,
+        ]; [4, 4] =>
+        [
+            2.0, 3.0, 2.0, 3.0,
+            4.0, 5.0, 4.0, 5.0,
+            2.0, 3.0, 2.0, 3.0,
+            4.0, 5.0, 4.0, 5.0,
+        ]
+    ));
+}

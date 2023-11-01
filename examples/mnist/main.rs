@@ -65,56 +65,57 @@ fn mnist_eval(model: &MnistModel, n_threads: usize, digit: &[f32], fname_cgraph:
     input.populate_f32(digit);
     input.set_name("input");
 
-    let mut cur = model.conv2d_1_kernel.conv_2d(input, 1, 1, 0, 0, 1, 1);
-    cur = cur.add(&model.conv2d_1_bias);
-    cur = cur.relu();
+    let mut cur = ctx0.conv_2d(&model.conv2d_1_kernel, input, 1, 1, 0, 0, 1, 1);
+    cur = ctx0.add(&cur, &model.conv2d_1_bias);
+    cur = ctx0.relu(&cur);
 
     // Output shape after Conv2D: (26 26 32 1)
-    cur = cur.pool_2d(GOpPool::POOL_MAX, 2, 2, 2, 2, 0, 0);
+    cur = ctx0.pool_2d(&cur, GOpPool::POOL_MAX, 2, 2, 2, 2, 0, 0);
     // Output shape after MaxPooling2D: (13 13 32 1)
-    cur = model.conv2d_2_kernel.conv_2d(cur, 1, 1, 0, 0, 1, 1);
-    cur = cur.add_with_context(&model.conv2d_2_bias, &ctx0);
-    cur = cur.relu();
+    // cur = ctx0.conv_2d(&model.conv2d_2_kernel, &cur, 1, 1, 0, 0, 1, 1);
+    // cur = ctx0.add(&cur, &model.conv2d_2_bias);
+    // cur = ctx0.relu(cur);
 
-    // Output shape after Conv2D: (11 11 64 1)
-    cur = cur.pool_2d(GOpPool::POOL_MAX, 2, 2, 2, 2, 0, 0);
-    // Output shape after MaxPooling2D: (5 5 64 1)
-    cur = cur.permute([1, 2, 0, 3]).cont();
-    // Output shape after permute: (64 5 5 1)
-    let cur = cur.reshape([1600, 1]);
-    // Final Dense layer
-    let cur = model.dense_weight.mul_mat(&cur); //.add(&model.dense_bias)
-    dbg!(cur.shape());
-    let mut probs = cur.soft_max();
-    probs.set_name("probs");
-
-    gf.build_forward_expand(&probs)?;
-    ctx0.compute(&mut gf)?;
-
-    gf.print();
-    gf.dump_dot(None, "mnist-cnn.dot");
-
-    if let Some(fname_cgraph) = fname_cgraph {
-        // export the compute graph for later use
-        // see the "mnist-cpu" example
-        gf.export(fname_cgraph);
-
-        println!("exported compute graph to '{}'", fname_cgraph);
-    }
-
-    // argmax of probs.data
-    let prediction = unsafe {
-        probs.with_data(|d| {
-            let index_of_max: Option<usize> = mem::transmute::<&[u8], &[f32]>(d)
-                .iter()
-                .enumerate()
-                .max_by(|(_, &a), (_, b)| a.total_cmp(b))
-                .map(|(index, _)| index);
-            index_of_max.unwrap()
-        })
-    }.map(|x| x as i32);
-
-    return prediction;
+    // // Output shape after Conv2D: (11 11 64 1)
+    // cur = ctx0.pool_2d(&cur, GOpPool::POOL_MAX, 2, 2, 2, 2, 0, 0);
+    // // Output shape after MaxPooling2D: (5 5 64 1)
+    // cur = ctx0.cont(ctx0.permute(&cur, [1, 2, 0, 3]));
+    // // Output shape after permute: (64 5 5 1)
+    // let mut cur = ctx0.reshape(&cur, [1600, 1]);
+    // // Final Dense layer
+    // cur = ctx0.add(ctx0.mul_mat(&model.dense_weight, &cur), &model.dense_bias);
+    // dbg!(cur.shape());
+    // let mut probs = ctx0.soft_max(&cur);
+    // probs.set_name("probs");
+    //
+    // gf.build_forward_expand(&probs)?;
+    // ctx0.compute(&mut gf)?;
+    //
+    // gf.print();
+    // gf.dump_dot(None, "mnist-cnn.dot");
+    //
+    // if let Some(fname_cgraph) = fname_cgraph {
+    //     // export the compute graph for later use
+    //     // see the "mnist-cpu" example
+    //     gf.export(fname_cgraph);
+    //
+    //     println!("exported compute graph to '{}'", fname_cgraph);
+    // }
+    //
+    // // argmax of probs.data
+    // let prediction = unsafe {
+    //     probs.with_data(|d| {
+    //         let index_of_max: Option<usize> = mem::transmute::<&[u8], &[f32]>(d)
+    //             .iter()
+    //             .enumerate()
+    //             .max_by(|(_, &a), (_, b)| a.total_cmp(b))
+    //             .map(|(index, _)| index);
+    //         index_of_max.unwrap()
+    //     })
+    // }.map(|x| x as i32);
+    //
+    // return prediction;
+    return Ok(0);
 }
 
 pub fn main() -> Result<()> {

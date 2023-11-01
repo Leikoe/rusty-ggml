@@ -68,8 +68,10 @@ impl<const DIMS: usize> GTensorMetadata<DIMS>
         let (op, typ, shape) = {
             assert_eq!(
                 DIMS, tr.n_dims as usize,
-                "Unexpected number of dimensions {:?}!",
-                tr.ne
+                "Unexpected number of dimensions {:?}! (expected {} found {})",
+                tr.ne,
+                DIMS,
+                tr.n_dims
             );
             let mut shp = [0; DIMS];
             shp.iter_mut()
@@ -600,7 +602,7 @@ impl<const DIMS: usize> GTensor<DIMS>
     ///
     /// **Note**: This immediately overwrites `self` with the copy.
     pub fn copy_from<T: AsRef<GTensor<DIMS>>>(&mut self, rhs: T) {
-        let nt = self.ctx.new_binary(self, rhs, |ctx, ictx, ltptr, rtptr| {
+        let nt = self.ctx.new_binary(&self, rhs, |ctx, ictx, ltptr, rtptr| {
             let md = GMemoryRequest::estimate_tensor_request_ictx(ctx, ictx, GType::F32, [])
                 .fit_or_die()?;
             Ok((md, unsafe { gg::ggml_cpy(ictx.gptr(), rtptr, ltptr) }))

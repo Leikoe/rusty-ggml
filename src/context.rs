@@ -465,7 +465,7 @@ impl GContext {
                 &mut IContext,
                 *mut gg::ggml_tensor,
             ) -> Result<(GMemoryRequest, *mut gg::ggml_tensor)>,
-            T: AsRef<GTensor<ODIMS>>,
+            T: AsRef<GTensor<IDIMS>>,
     {
         let tensor = tensor.as_ref();
         self.delay_failure_with_icontext(
@@ -503,7 +503,7 @@ impl GContext {
             self.dead.store(true, SeqCst);
             lhs.ctx.dead.store(true, SeqCst);
             rhs.ctx.dead.store(true, SeqCst);
-            return self.make_dead_clone();
+            return lhs.make_dead_clone();
         }
 
         self.delay_failure_with_icontext(
